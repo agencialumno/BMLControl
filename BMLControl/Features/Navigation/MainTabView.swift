@@ -187,7 +187,7 @@ struct MainTabView: View {
         }
     }
 
-    // MARK: - ABA 4: DISPOSITIVO & CONTROLES (MÓDULOS F, G e H)
+    // MARK: - ABA 4: DISPOSITIVO & FUNÇÕES INTELIGENTES (MÓDULOS F, G e H)
     private var deviceTab: some View {
         NavigationStack {
             Form {
@@ -223,6 +223,8 @@ struct MainTabView: View {
                     }
                     .disabled(!bleManager.isConnected)
                 }
+
+                SmartFunctionsSections(bleManager: bleManager, settingsStore: settingsStore)
 
                 Section("Utilitários do Relógio") {
                     Button("Sincronizar Data e Hora Agora (0x93)") {

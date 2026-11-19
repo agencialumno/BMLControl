@@ -78,7 +78,7 @@ final class BMLSyncEngine: ObservableObject {
         case .ack(let code):
             lastAckHex = String(format: "0x%02X", code)
 
-        case .heartbeat:
+        case .heartbeat, .watchTriggeredFindPhone, .watchTriggeredCameraShutter:
             break
         }
 
@@ -103,8 +103,6 @@ final class BMLSyncEngine: ObservableObject {
         totalPersistedHourlySamples = (try? modelContext.fetchCount(FetchDescriptor<HourlyVitalSample>())) ?? 0
         totalPersistedSleepSegments = (try? modelContext.fetchCount(FetchDescriptor<SleepSegmentRecord>())) ?? 0
     }
-
-    // MARK: - Upsert Operations (Sem Duplicação)
 
     private func upsertDailyActivity(
         dateKey: String,

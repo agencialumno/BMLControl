@@ -1,5 +1,6 @@
 import Foundation
 import CoreBluetooth
+import AudioToolbox
 
 struct DiscoveredWatch: Identifiable {
     let id: UUID
@@ -18,6 +19,8 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var discoveredDevices: [DiscoveredWatch] = []
     @Published var logs: [BLELogEntry] = []
     @Published var hasSavedWatch: Bool = false
+    @Published var lastRemoteCameraTrigger: Date?
+    @Published var isFindingPhoneAlertActive: Bool = false
 
     var onDecodedEvent: ((BMLDecodedEvent) -> Void)?
     var onSyncStarted: (() -> Void)?
@@ -87,7 +90,7 @@ final class BLEManager: NSObject, ObservableObject {
         centralManager.cancelPeripheralConnection(peripheral)
     }
 
-    // MARK: - Comandos Validados (TX)
+    // MARK: - Comandos Validados e Funções Inteligentes (TX)
 
     func sendSyncTime() {
         sendCommand(BMLCommandBuilder.syncTime(), label: "Sincronizar Hora (0x93)")
@@ -114,8 +117,47 @@ final class BLEManager: NSObject, ObservableObject {
         sendCommand(BMLCommandBuilder.setStepGoal(steps), label: "Meta \(steps) passos (0x74)")
     }
 
+    func sendNotificationMask(_ mask: UInt16) {
+        sendCommand(BMLCommandBuilder.setNotificationMask(mask), label: String(format: "Alertas ANCS 0x%04X (0x72)", mask))
+    }
+
+    func sendAlarm(_ alarm: WatchAlarmItem) {
+        let packet = BMLCommandBuilder.setAlarm(
+            index: alarm.id,
+            enabled: alarm.isEnabled,
+            hour: alarm.hour,
+            minute: alarm.minute,
+            repeatMask: alarm.repeatMask
+        )
+        sendCommand(packet, label: "Alarme #\(alarm.id + 1) \(alarm.formattedTime) (0x73)")
+    }
+
+    func sendWeather(_ weather: WeatherSnapshot) {
+        let packet = BMLCommandBuilder.syncWeather(
+            conditionCode: weather.watchConditionCode,
+            currentTemp: weather.currentTemp,
+            minTemp: weather.minTemp,
+            maxTemp: weather.maxTemp
+        )
+        sendCommand(packet, label: "Clima \(weather.currentTemp)°C (0x7E)")
+    }
+
+    func sendRemoteCamera(enabled: Bool) {
+        sendCommand(BMLCommandBuilder.setRemoteCameraMode(enabled: enabled), label: "Câmera Remota \(enabled ? "ON" : "OFF") (0x79)")
+    }
+
     func clearLogs() {
         logs.removeAll()
+    }
+
+    private func triggerPhoneAlertFeedback() {
+        isFindingPhoneAlertActive = true
+        AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+        AudioServicesPlaySystemSound(1005)
+        Task {
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            isFindingPhoneAlertActive = false
+        }
     }
 
     private func connectPeripheral(_ peripheral: CBPeripheral, displayName: String) {
@@ -277,6 +319,11 @@ extension BLEManager: CBPeripheralDelegate {
             let hex = data.map { String(format: "%02X", $0) }.joined(separator: " ")
             if let output = BMLPacketParser.decode(data) {
                 log(.rx, "\(output.logDescription) | \(hex)")
+                if output.event == .watchTriggeredFindPhone {
+                    triggerPhoneAlertFeedback()
+                } else if output.event == .watchTriggeredCameraShutter {
+                    lastRemoteCameraTrigger = Date()
+                }
                 onDecodedEvent?(output.event)
             } else {
                 log(.rx, "Não mapeado: \(hex)")

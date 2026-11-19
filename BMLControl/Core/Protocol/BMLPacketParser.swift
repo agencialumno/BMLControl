@@ -19,6 +19,8 @@ enum BMLDecodedEvent: Equatable {
     case sleepSegment(segmentID: String, dateKey: String, startTimestamp: Date, isDeepSleep: Bool, durationMinutes: Int)
     case ack(code: UInt8)
     case heartbeat
+    case watchTriggeredFindPhone
+    case watchTriggeredCameraShutter
 }
 
 struct BMLPacketParseOutput {
@@ -42,7 +44,6 @@ enum BMLPacketParser {
         let subCommand = bytes[5]
 
         switch (commandID, subCommand) {
-        // 1. Bateria e Estado de Carga: AB 00 05 FF 91 80 [Carga] [Nivel]
         case (0x91, 0x80) where bytes.count >= 8:
             let charging = bytes[6] == 0x01
             let level = Int(bytes[7])
@@ -51,7 +52,6 @@ enum BMLPacketParser {
                 logDescription: "Bateria: \(level)% (\(charging ? "Carregando" : "Uso"))"
             )
 
-        // 2. Resumo Diário: AB 00 11 FF 51 08 [Steps 3B] [Kcal 3B] [DeepH] [DeepM] [LightH] [LightM]
         case (0x51, 0x08) where bytes.count >= 16:
             let steps = (Int(bytes[6]) << 16) | (Int(bytes[7]) << 8) | Int(bytes[8])
             let kcal = (Int(bytes[9]) << 16) | (Int(bytes[10]) << 8) | Int(bytes[11])
@@ -70,7 +70,6 @@ enum BMLPacketParser {
                 logDescription: "Resumo Diário: \(steps) passos | \(kcal) kcal | Sono \(deepMin + lightMin)m"
             )
 
-        // 3. Snapshot Horário: AB 00 19 FF 51 20 [YY MM DD HH] [Steps 3B] [Kcal 3B] [HR] [SpO2] [SBP] [DBP]
         case (0x51, 0x20) where bytes.count >= 20:
             let year = 2000 + Int(bytes[6])
             let month = Int(bytes[7])
@@ -107,7 +106,6 @@ enum BMLPacketParser {
                 )
             )
 
-        // 4. Amostra Horária de FC: AB 00 0B FF 51 0B [YY MM DD HH] 00 [BPM] ...
         case (0x51, 0x0B) where bytes.count >= 12:
             let year = 2000 + Int(bytes[6])
             let month = Int(bytes[7])
@@ -124,7 +122,6 @@ enum BMLPacketParser {
                 logDescription: String(format: "FC Horária (%02d/%02d %02d:00): %d bpm", day, month, hour, bpm)
             )
 
-        // 5. Fases do Sono: AB 00 0B FF 52 80 [YY MM DD HH MIN] [Tipo] [Dur 2B]
         case (0x52, 0x80) where bytes.count >= 14:
             let year = 2000 + Int(bytes[6])
             let month = Int(bytes[7])
@@ -152,18 +149,30 @@ enum BMLPacketParser {
                 )
             )
 
-        // 6. Confirmação de Comando (ACK): AB 00 04 FF 7B 80 [Code]
         case (0x7B, 0x80) where bytes.count >= 7:
             return BMLPacketParseOutput(
                 event: .ack(code: bytes[6]),
                 logDescription: String(format: "ACK confirmado pelo relógio (0x%02X)", bytes[6])
             )
 
-        // 7. Heartbeat: AB 00 04 FF 21 80 00
         case (0x21, 0x80):
             return BMLPacketParseOutput(
                 event: .heartbeat,
                 logDescription: "Heartbeat ativo (0x21)"
+            )
+
+        // Evento disparado pelo relógio ao tocar em "Localizar Celular" (0x81 ou 0x71)
+        case (0x81, _), (0x71, _):
+            return BMLPacketParseOutput(
+                event: .watchTriggeredFindPhone,
+                logDescription: "Relógio acionou Localizar iPhone!"
+            )
+
+        // Evento disparado pelo relógio ao tocar no obturador da Câmera Remota (0x79)
+        case (0x79, _):
+            return BMLPacketParseOutput(
+                event: .watchTriggeredCameraShutter,
+                logDescription: "Relógio acionou disparo da Câmera Remota!"
             )
 
         default:
