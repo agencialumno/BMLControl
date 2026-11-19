@@ -40,7 +40,7 @@ struct BMLControlApp: App {
 
     var body: some Scene {
         WindowGroup {
-            BLEProofOfConceptView(
+            MainTabView(
                 bleManager: bleManager,
                 syncEngine: syncEngine,
                 settingsStore: settingsStore
