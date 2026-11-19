@@ -1,29 +1,28 @@
-# Especificação de Protocolo BLE — BML X Pro Max 5
+# Especificação de Protocolo BLE — BML X Pro Max 5 (`fwk_2.23`)
 
-## 1. Endereçamento de Características (Confirmado)
-- **Canal Primário de Comandos (Wearfit NUS 1):**
-  - Service: `6E400001-B5A3-F393-E0A9-E50E24DCCA9E`
-  - Write (App -> Watch): `6E400002-B5A3-F393-E0A9-E50E24DCCA9E` (`Write Without Response`)
-  - Notify (Watch -> App): `6E400003-B5A3-F393-E0A9-E50E24DCCA9E` (`Notify`)
-- **Canal Secundário de Dados Pesados (Wearfit NUS 2):**
-  - Service: `6E400011-B5A3-F393-E0A9-E50E24DCCA9E`
-  - Write (App -> Watch): `6E400012-B5A3-F393-E0A9-E50E24DCCA9E` (`Write Without Response`)
-  - Notify (Watch -> App): `6E400013-B5A3-F393-E0A9-E50E24DCCA9E` (`Notify`)
-- **Canal Auxiliar (`0xFF12`):**
-  - Service: `0000FF12-0000-1000-8000-00805F9B34FB`
-  - Write: `FF13` | Notify: `FF14` | Read/WriteNoResp: `FF15`
+## 1. Canais GATT Confirmados
+- **Serviço Principal de Comandos (`6E400001-B5A3-F393-E0A9-E50E24DCCA9E`):**
+  - **TX (iPhone -> Relógio):** `6E400002-B5A3-F393-E0A9-E50E24DCCA9E` (`Write Without Response`)
+  - **RX (Relógio -> iPhone):** `6E400003-B5A3-F393-E0A9-E50E24DCCA9E` (`Notify` — Confirmado)
+- **Serviço Secundário / Transferência em Lote (`6E400011-B5A3-F393-E0A9-E50E24DCCA9E`):**
+  - **TX (iPhone -> Relógio):** `6E400012-B5A3-F393-E0A9-E50E24DCCA9E` (`Write Without Response`)
+  - **RX (Relógio -> iPhone):** `6E400013-B5A3-F393-E0A9-E50E24DCCA9E` (`Notify` — Confirmado)
+- **Serviço `FF12`:** `FF14` rejeita `Notify`; ignorado na camada BLE.
 
-## 2. Estrutura de Frames (Hipótese ainda não testada — Validar na Fase 2)
-Baseado na documentação open-source do protocolo Wearfit (Gadgetbridge):
-- **Byte 0 (Header):** `0xAB` (início de frame padrão Wearfit)
-- **Bytes 1–2 (Length):** Tamanho do payload em Big-Endian (2 bytes)
-- **Byte 3 (Message ID / Type):** Identificador da categoria do comando
-- **Byte 4 (Version / Sub-command):** Subtipo da operação
-- **Byte 5+ (Payload):** Parâmetros específicos do comando
+## 2. Estrutura Binária dos Frames (Confirmada)
+`[0xAB] [Len_Hi] [Len_Lo] [0xFF] [Cmd_ID] [Sub_Cmd] [Payload...]` (sem checksum final).
 
-## 3. Tabela de Comandos Testados
-| Comando | Canal | Bytes Enviados (Hex) | Resposta Recebida (Hex) | Status |
+## 3. Tabela de Comandos e Telemetria Validados
+
+| Operação | Direção | Frame Hexadecimal | Layout do Payload | Classificação |
 | :--- | :--- | :--- | :--- | :--- |
-| Sincronização de Data/Hora | `6E400002` | `[A testar na Fase 2]` | `[Pendente]` | Hipótese ainda não testada |
-| Leitura de Bateria | `6E400002` | `[A testar na Fase 2]` | `[Pendente]` | Hipótese ainda não testada |
-| Encontrar Relógio (Vibrar) | `6E400002` | `[A testar na Fase 2]` | `[Pendente]` | Hipótese ainda não testada |
+| **Bateria e Carga** | Watch -> App | `AB 00 05 FF 91 80 [Carga] [Nivel]` | `[Carga]`: `00` fora / `01` carregando; `[Nivel]`: `0`–`100` (`0x42` = 66%) | **Confirmada** |
+| **Heartbeat** | Watch -> App | `AB 00 04 FF 21 80 00` | Sinal periódico de vida da conexão | **Confirmada** |
+| **Encontrar Relógio** | App -> Watch | `AB 00 04 FF 71 80 [01/00]` | `01` inicia vibração e toque; `00` interrompe | **Confirmada** |
+| **Sincronizar Hora** | App -> Watch | `AB 00 0B FF 93 80 00 [YY_H] [YY_L] [MM] [DD] [HH] [MIN] [SS]` | Atualiza relógio. Ack: `AB 00 04 FF 7B 80 04` | **Confirmada** |
+| **Pedir Sincronização** | App -> Watch | `AB 00 0A FF 51 80 00 [YY_H] [YY_L] [MM] [DD] [HH] [MIN]` | Dispara descarga histórica de passos, vitais e sono | **Confirmada** |
+| **Resumo Diário** | Watch -> App | `AB 00 11 FF 51 08 [Steps(3B)] [Kcal(3B)] [DeepH] [DeepM] [LightH] [LightM] ...` | Totais acumulados do dia atual | **Confirmada** |
+| **Snapshot Horário** | Watch -> App | `AB 00 19 FF 51 20 [YY-2000] [MM] [DD] [HH] [Steps(3B)] [Kcal(3B)] [HR] [SpO2] [SBP] [DBP] ...` | Métricas horárias de passos, calorias, FC, SpO2 e PA | **Confirmada** |
+| **Amostra Horária FC** | Watch -> App | `AB 00 0B FF 51 0B [YY-2000] [MM] [DD] [HH] 00 [BPM] [BPM] 0B` | Leitura pontual de batimentos por hora | **Confirmada** |
+| **Fases do Sono** | Watch -> App | `AB 00 0B FF 52 80 [YY-2000] [MM] [DD] [HH] [MIN] [Tipo] [Dur(2B)]` | `[Tipo]`: `01` Profundo, `02` Leve; `[Dur]`: minutos | **Confirmada** |
+| **Medição Remota** | App -> Watch | `AB 00 04 FF 31 [0A/12] 01` | Sem retorno imediato; investigar subcomando na Fase 8 | **Parcialmente identificada** |

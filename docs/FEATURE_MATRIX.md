@@ -2,11 +2,13 @@
 
 | Módulo | Funcionalidade | Classificação Atual | Evidência Técnica |
 | :--- | :--- | :--- | :--- |
-| **J — Bluetooth** | Scan, Identificação por MAC (`0xFFF0`) e Conexão GATT | **Confirmada** | MAC `414275A43FA2` visível no Manufacturer Data `0xFFF0`. |
-| **J — Bluetooth** | Canais Dual-UART (`6E400001` e `6E400011`) + `FF12` | **Confirmada** | Mapeados via nRF Connect no iPhone 11. |
-| **H — Configurações** | Sincronização de Data/Hora, 12h/24h, Levantar Pulso | **Parcialmente identificada** | Suportado pelo barramento `6E400001`; validar bytes na Fase 2. |
-| **G — Funções Inteligentes** | Encontrar Relógio, Clima, Alarmes, Não Perturbe | **Parcialmente identificada** | Suportado pelo SDK Wearfit `2.23`; validar bytes na Fase 2. |
-| **F — Notificações** | Chamadas, WhatsApp, Instagram, SMS (via ANCS) | **Parcialmente identificada** | Suportado pelo iOS + comando de habilitação no `6E400001`. |
-| **A/B/C/D — Métricas** | Bateria, Passos, FC, SpO2, Sono | **Parcialmente identificada** | Trafega via notificações `6E400003` / `6E400013`. |
-| **E — Watch Faces** | Criação e Upload de Mostradores | **Parcialmente identificada** | Canal dedicado `6E400011` (`0012`/`0013`) presente no firmware. |
-| **H — Firmware OTA** | Atualização de Firmware via `FE59` | **Bloqueada por Segurança** | Exige binário assinado pelo fabricante; fora do escopo por segurança. |
+| **J — Bluetooth** | Scan, Filtro MAC `0xFFF0` (`414275A43FA2`), Dual-UART | **Confirmada** | Validado no iPhone 11 via nRF Connect. |
+| **A — Dashboard** | Bateria (`0x91`), Passos, Calorias (`0x51 0x08`) | **Confirmada** | Decodificado dos logs reais do X5 Pro Max. |
+| **B — Saúde** | Histórico de FC, SpO2 e Pressão Arterial (`0x51 0x20` / `0x0B`) | **Confirmada** | Decodificado dos logs reais (`HR`, `SpO2`, `SBP/DBP`). |
+| **C — Atividades** | Passos, Calorias e Evolução Horária (`0x51 0x20`) | **Confirmada** | Decodificado dos logs reais do X5 Pro Max. |
+| **D — Sono** | Duração, Horários e Fases Profundo/Leve (`0x52 0x80`) | **Confirmada** | Decodificado dos logs reais do X5 Pro Max. |
+| **G — Funções Inteligentes** | Encontrar Relógio (`0x71`) e Sincronização de Hora (`0x93`) | **Confirmada** | Validado fisicamente no pulso na Fase 2. |
+| **F — Notificações** | Chamadas, WhatsApp, Instagram, SMS (ANCS + flags) | **Parcialmente identificada** | Implementar na Fase 9 após pareamento do app. |
+| **H — Configurações** | Formato 12/24h, Levantar Pulso, Alarmes, Não Perturbe | **Parcialmente identificada** | Protocolo Wearfit mapeado; validar na Fase 9/11. |
+| **E — Watch Faces** | Criação e Upload via canal `6E400011` (`0012`/`0013`) | **Parcialmente identificada** | Barramento presente; investigar na Fase 10. |
+| **H — Firmware OTA** | Atualização via `FE59` | **Bloqueada por Segurança** | Risco de brick sem binário oficial assinado. |

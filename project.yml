@@ -1,0 +1,46 @@
+name: BMLControl
+options:
+  bundleIdPrefix: com.victor.bmlcontrol
+  deploymentTarget:
+    iOS: "17.0"
+  generateEmptyDirectories: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGNING_ALLOWED: "NO"
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGN_IDENTITY: ""
+targets:
+  BMLControl:
+    type: application
+    platform: iOS
+    sources:
+      - path: BMLControl
+        excludes:
+          - "**/Info.plist"
+    info:
+      path: BMLControl/App/Info.plist
+      properties:
+        CFBundleDisplayName: BML Control
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        NSBluetoothAlwaysUsageDescription: "O BML Control utiliza Bluetooth para conectar e sincronizar métricas com o smartwatch BML X Pro Max 5."
+        UIBackgroundModes:
+          - bluetooth-central
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.victor.bmlcontrol.app
+        TARGETED_DEVICE_FAMILY: "1"
+  BMLControlTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: BMLControlTests
+    dependencies:
+      - target: BMLControl
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.victor.bmlcontrol.tests
