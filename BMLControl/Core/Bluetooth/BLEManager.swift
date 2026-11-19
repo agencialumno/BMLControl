@@ -18,13 +18,16 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var discoveredDevices: [DiscoveredWatch] = []
     @Published var telemetry = BMLTelemetrySnapshot()
     @Published var logs: [BLELogEntry] = []
+    @Published var hasSavedWatch: Bool = false
 
     private var centralManager: CBCentralManager!
     private var connectedPeripheral: CBPeripheral?
     private var primaryWriteCharacteristic: CBCharacteristic?
+    private let savedPeripheralKey = "bml_saved_watch_uuid"
 
     override init() {
         super.init()
+        hasSavedWatch = UserDefaults.standard.string(forKey: savedPeripheralKey) != nil
         centralManager = CBCentralManager(delegate: self, queue: .main)
     }
 
@@ -35,22 +38,42 @@ final class BLEManager: NSObject, ObservableObject {
         }
         discoveredDevices.removeAll()
         isScanning = true
-        log(.info, "Iniciando busca BLE pelo X5 Pro Max...")
+        log(.info, "Buscando BML X Pro Max 5...")
         centralManager.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
     }
 
     func stopScan() {
         centralManager.stopScan()
         isScanning = false
-        log(.info, "Busca BLE encerrada.")
     }
 
     func connect(to watch: DiscoveredWatch) {
         stopScan()
-        log(.info, "Conectando a \(watch.name) (\(watch.macHex ?? watch.id.uuidString))...")
-        connectedPeripheral = watch.peripheral
-        watch.peripheral.delegate = self
-        centralManager.connect(watch.peripheral, options: nil)
+        UserDefaults.standard.set(watch.id.uuidString, forKey: savedPeripheralKey)
+        hasSavedWatch = true
+        connectPeripheral(watch.peripheral, displayName: watch.name)
+    }
+
+    func attemptAutoReconnect() {
+        guard centralManager.state == .poweredOn,
+              !isConnected,
+              let uuidString = UserDefaults.standard.string(forKey: savedPeripheralKey),
+              let uuid = UUID(uuidString: uuidString) else {
+            return
+        }
+
+        let knownPeripherals = centralManager.retrievePeripherals(withIdentifiers: [uuid])
+        if let peripheral = knownPeripherals.first {
+            log(.info, "Reconectando automaticamente ao relógio salvo...")
+            connectPeripheral(peripheral, displayName: peripheral.name ?? BMLUUIDs.expectedDeviceName)
+        }
+    }
+
+    func forgetSavedWatch() {
+        disconnect()
+        UserDefaults.standard.removeObject(forKey: savedPeripheralKey)
+        hasSavedWatch = false
+        log(.info, "Vínculo salvo do relógio removido.")
     }
 
     func disconnect() {
@@ -58,28 +81,50 @@ final class BLEManager: NSObject, ObservableObject {
         centralManager.cancelPeripheralConnection(peripheral)
     }
 
+    // MARK: - Comandos de Escrita (TX)
+
     func sendSyncTime() {
-        let packet = BMLPacketParser.buildSyncTimeCommand()
-        sendCommand(packet, label: "Sincronizar Data/Hora (0x93)")
+        sendCommand(BMLCommandBuilder.syncTime(), label: "Sincronizar Hora (0x93)")
     }
 
     func sendSyncData() {
-        let packet = BMLPacketParser.buildSyncTodayDataCommand()
-        sendCommand(packet, label: "Sincronizar Passos/Vitais/Sono (0x51)")
+        sendCommand(BMLCommandBuilder.syncData(), label: "Sincronizar Histórico (0x51)")
     }
 
     func sendFindWatch(activate: Bool = true) {
-        let packet = BMLPacketParser.buildFindWatchCommand(activate: activate)
-        sendCommand(packet, label: activate ? "Encontrar Relógio ON (0x71)" : "Encontrar Relógio OFF (0x71)")
+        sendCommand(BMLCommandBuilder.findWatch(activate: activate), label: activate ? "Vibrar ON (0x71)" : "Vibrar OFF (0x71)")
+    }
+
+    func sendRaiseWrist(enabled: Bool) {
+        sendCommand(BMLCommandBuilder.setRaiseWristToWake(enabled: enabled), label: "Levantar Pulso \(enabled ? "ON" : "OFF") (0x77)")
+    }
+
+    func sendTimeFormat(is24Hour: Bool) {
+        sendCommand(BMLCommandBuilder.set24HourFormat(is24Hour: is24Hour), label: "Formato \(is24Hour ? "24h" : "12h") (0x7C)")
+    }
+
+    func sendDoNotDisturb(enabled: Bool) {
+        sendCommand(BMLCommandBuilder.setDoNotDisturb(enabled: enabled), label: "Não Perturbe \(enabled ? "ON" : "OFF") (0x76)")
+    }
+
+    func sendStepGoal(_ steps: Int) {
+        sendCommand(BMLCommandBuilder.setStepGoal(steps), label: "Meta \(steps) passos (0x74)")
     }
 
     func clearLogs() {
         logs.removeAll()
     }
 
+    private func connectPeripheral(_ peripheral: CBPeripheral, displayName: String) {
+        log(.info, "Conectando a \(displayName)...")
+        connectedPeripheral = peripheral
+        peripheral.delegate = self
+        centralManager.connect(peripheral, options: nil)
+    }
+
     private func sendCommand(_ data: Data, label: String) {
         guard let peripheral = connectedPeripheral, let char = primaryWriteCharacteristic else {
-            log(.error, "Canal 6E400002 indisponível. Conecte o relógio primeiro.")
+            log(.error, "Canal 6E400002 indisponível.")
             return
         }
         let hex = data.map { String(format: "%02X", $0) }.joined(separator: " ")
@@ -89,7 +134,7 @@ final class BLEManager: NSObject, ObservableObject {
 
     private func log(_ direction: BLELogEntry.Direction, _ message: String) {
         logs.insert(BLELogEntry(timestamp: Date(), direction: direction, message: message), at: 0)
-        if logs.count > 250 {
+        if logs.count > 300 {
             logs.removeLast()
         }
     }
@@ -101,7 +146,8 @@ extension BLEManager: CBCentralManagerDelegate {
             switch central.state {
             case .poweredOn:
                 bluetoothStateText = "Bluetooth Ativo"
-                log(.info, "Rádio Bluetooth pronto.")
+                log(.info, "Rádio Bluetooth ativo.")
+                attemptAutoReconnect()
             case .poweredOff:
                 bluetoothStateText = "Bluetooth Desligado"
             case .unauthorized:
@@ -120,11 +166,10 @@ extension BLEManager: CBCentralManagerDelegate {
     ) {
         Task { @MainActor in
             let advName = advertisementData[CBAdvertisementDataLocalNameKey] as? String
-            let name = advName ?? peripheral.name ?? "Dispositivo Sem Nome"
+            let name = advName ?? peripheral.name ?? "Dispositivo"
 
             var extractedMac: String?
             if let mfgData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data, mfgData.count >= 8 {
-                // Os 2 primeiros bytes no CoreBluetooth são o Company ID (0xFFF0), seguidos pelos 6 bytes do MAC
                 let macBytes = mfgData.suffix(6)
                 extractedMac = macBytes.map { String(format: "%02X", $0) }.joined(separator: ":")
             }
@@ -163,7 +208,7 @@ extension BLEManager: CBCentralManagerDelegate {
             isConnected = false
             connectedDeviceName = "Desconectado"
             primaryWriteCharacteristic = nil
-            log(.error, "Desconectado do relógio. \(error?.localizedDescription ?? "")")
+            log(.error, "Desconectado. \(error?.localizedDescription ?? "")")
         }
     }
 }
@@ -188,12 +233,21 @@ extension BLEManager: CBPeripheralDelegate {
             for char in chars {
                 if char.uuid == BMLUUIDs.primaryWriteRX {
                     primaryWriteCharacteristic = char
-                    log(.info, "Canal TX pronto (6E400002).")
+                    log(.info, "Canal de escrita pronto (6E400002).")
                 } else if char.uuid == BMLUUIDs.primaryNotifyTX || char.uuid == BMLUUIDs.secondaryNotifyTX {
                     peripheral.setNotifyValue(true, for: char)
-                    log(.info, "Escuta Notify ativada em \(char.uuid.uuidString.prefix(8)).")
                 }
             }
+        }
+    }
+
+    nonisolated func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+        Task { @MainActor in
+            guard characteristic.isNotifying, characteristic.uuid == BMLUUIDs.primaryNotifyTX else { return }
+            log(.info, "Notify 6E400003 ativo. Iniciando sincronização automática...")
+            sendSyncTime()
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            sendSyncData()
         }
     }
 
@@ -202,9 +256,9 @@ extension BLEManager: CBPeripheralDelegate {
             guard let data = characteristic.value else { return }
             let hex = data.map { String(format: "%02X", $0) }.joined(separator: " ")
             if let decoded = BMLPacketParser.parse(data, into: &telemetry) {
-                log(.rx, "\(decoded) | Raw: \(hex)")
+                log(.rx, "\(decoded) | \(hex)")
             } else {
-                log(.rx, "Raw: \(hex)")
+                log(.rx, "Não mapeado: \(hex)")
             }
         }
     }
