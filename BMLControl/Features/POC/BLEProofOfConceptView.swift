@@ -1,31 +1,33 @@
 import SwiftUI
+import SwiftData
 
 struct BLEProofOfConceptView: View {
     @ObservedObject var bleManager: BLEManager
-    @State private var raiseWristEnabled = true
-    @State private var is24HourFormat = true
-    @State private var dndEnabled = false
+    @ObservedObject var syncEngine: BMLSyncEngine
+    @ObservedObject var settingsStore: DeviceSettingsStore
+
+    @Query(sort: \DailyActivityRecord.dateKey, order: .reverse) private var dailyRecords: [DailyActivityRecord]
+    @Query(sort: \HourlyVitalSample.sampleID, order: .reverse) private var hourlySamples: [HourlyVitalSample]
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 14) {
                     connectionHeaderCard
+                    swiftDataStatusCard
 
                     if !bleManager.isConnected {
                         scanSection
                     } else {
-                        metricsGridSection
-                        confirmedWriteControlsSection
-                        experimentalWriteControlsSection
-                        hourlyHistorySection
+                        confirmedControlsSection
                     }
 
+                    persistedMetricsSection
                     consoleSection
                 }
                 .padding()
             }
-            .navigationTitle("BML Control • Fase 4")
+            .navigationTitle("BML Control • Fase 5")
         }
     }
 
@@ -34,13 +36,13 @@ struct BLEProofOfConceptView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(bleManager.isConnected ? bleManager.connectedDeviceName : "BML X Pro Max 5")
                     .font(.headline)
-                Text(bleManager.isConnected ? "Sincronização bidirecional ativa" : bleManager.bluetoothStateText)
+                Text(bleManager.isConnected ? "Conectado • Sync Automático Ativo" : bleManager.bluetoothStateText)
                     .font(.caption)
                     .foregroundStyle(bleManager.isConnected ? .green : .secondary)
             }
             Spacer()
-            if let battery = bleManager.telemetry.batteryLevel {
-                Label("\(battery)%", systemImage: bleManager.telemetry.isCharging == true ? "battery.100.bolt" : "battery.75")
+            if let battery = settingsStore.lastBatteryLevel {
+                Label("\(battery)%", systemImage: settingsStore.lastIsCharging ? "battery.100.bolt" : "battery.75")
                     .font(.subheadline.bold())
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
@@ -49,6 +51,26 @@ struct BLEProofOfConceptView: View {
         }
         .padding()
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private var swiftDataStatusCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Label("Banco Local SwiftData", systemImage: "internaldrive")
+                    .font(.caption.bold())
+                Spacer()
+                if let lastSync = settingsStore.lastSyncDate {
+                    Text("Sync: \(lastSync.formatted(date: .omitted, time: .shortened))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Text("Salvos offline: \(syncEngine.totalPersistedDays) dias • \(syncEngine.totalPersistedHourlySamples) amostras horárias • \(syncEngine.totalPersistedSleepSegments) blocos de sono")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
     }
 
     private var scanSection: some View {
@@ -90,85 +112,45 @@ struct BLEProofOfConceptView: View {
         }
     }
 
-    private var metricsGridSection: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 8) {
-                metricCard(title: "Passos", value: bleManager.telemetry.steps.map(String.init) ?? "--")
-                metricCard(title: "Calorias", value: bleManager.telemetry.calories.map { "\($0) kcal" } ?? "--")
-                metricCard(title: "Sono Total", value: bleManager.telemetry.totalSleepFormatted)
-            }
-            HStack(spacing: 8) {
-                metricCard(title: "Batimentos", value: bleManager.telemetry.heartRate.map { "\($0) bpm" } ?? "--")
-                metricCard(title: "SpO2", value: bleManager.telemetry.spo2.map { "\($0)%" } ?? "--")
-                metricCard(
-                    title: "Pressão (Est.)",
-                    value: {
-                        if let sbp = bleManager.telemetry.systolicBP, let dbp = bleManager.telemetry.diastolicBP {
-                            return "\(sbp)/\(dbp)"
-                        }
-                        return "--"
-                    }()
-                )
-            }
-        }
-    }
-
-    private var confirmedWriteControlsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Comandos Confirmados")
-                .font(.caption.bold())
-                .foregroundStyle(.secondary)
-
-            HStack(spacing: 8) {
-                Button("Hora (0x93)") { bleManager.sendSyncTime() }
-                    .buttonStyle(.bordered)
-                Button("Dados (0x51)") { bleManager.sendSyncData() }
-                    .buttonStyle(.borderedProminent)
-                Button("Vibrar (0x71)") { bleManager.sendFindWatch(activate: true) }
-                    .buttonStyle(.bordered)
-            }
-            .font(.caption.bold())
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
-    }
-
-    private var experimentalWriteControlsSection: some View {
+    private var confirmedControlsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Validação de Escrita (Testar no Relógio)")
+                Text("Comandos Validados no Hardware")
                     .font(.caption.bold())
                     .foregroundStyle(.secondary)
                 Spacer()
-                if let ack = bleManager.telemetry.lastAckHex {
-                    Text("Último ACK: \(ack)")
+                if let ack = syncEngine.lastAckHex {
+                    Text("ACK: \(ack)")
                         .font(.caption2.bold())
                         .foregroundStyle(.green)
                 }
             }
 
-            Toggle("Levantar Pulso (0x77)", isOn: $raiseWristEnabled)
+            HStack(spacing: 8) {
+                Button("Sincronizar") { bleManager.sendSyncData() }
+                    .buttonStyle(.borderedProminent)
+                Button("Hora (0x93)") { bleManager.sendSyncTime() }
+                    .buttonStyle(.bordered)
+                Button("Vibrar (0x71)") { bleManager.sendFindWatch(activate: true) }
+                    .buttonStyle(.bordered)
+            }
+            .font(.caption.bold())
+
+            Toggle("Levantar Pulso (0x77)", isOn: $settingsStore.raiseWristEnabled)
                 .font(.subheadline)
-                .onChange(of: raiseWristEnabled) { _, newValue in
+                .onChange(of: settingsStore.raiseWristEnabled) { _, newValue in
                     bleManager.sendRaiseWrist(enabled: newValue)
                 }
 
-            Toggle("Formato 24 Horas (0x7C)", isOn: $is24HourFormat)
+            Toggle("Formato 24 Horas (0x7C)", isOn: $settingsStore.is24HourFormat)
                 .font(.subheadline)
-                .onChange(of: is24HourFormat) { _, newValue in
+                .onChange(of: settingsStore.is24HourFormat) { _, newValue in
                     bleManager.sendTimeFormat(is24Hour: newValue)
                 }
 
-            Toggle("Modo Não Perturbe (0x76)", isOn: $dndEnabled)
-                .font(.subheadline)
-                .onChange(of: dndEnabled) { _, newValue in
-                    bleManager.sendDoNotDisturb(enabled: newValue)
-                }
-
             HStack {
-                Button("Definir Meta 8.000 Passos (0x74)") {
-                    bleManager.sendStepGoal(8000)
+                Button("Meta \(settingsStore.dailyStepGoal) Passos (0x74)") {
+                    bleManager.sendStepGoal(settingsStore.dailyStepGoal)
                 }
                 .buttonStyle(.bordered)
                 .font(.caption.bold())
@@ -185,26 +167,25 @@ struct BLEProofOfConceptView: View {
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
     }
 
-    private var hourlyHistorySection: some View {
-        Group {
-            if !bleManager.telemetry.hourlyRecords.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Leituras Horárias Decodificadas (\(bleManager.telemetry.hourlyRecords.count))")
-                        .font(.caption.bold())
-                        .foregroundStyle(.secondary)
+    private var persistedMetricsSection: some View {
+        let latestDay = dailyRecords.first
+        let latestSample = hourlySamples.first(where: { $0.heartRate > 0 })
 
-                    ForEach(bleManager.telemetry.hourlyRecords.prefix(5)) { item in
-                        HStack {
-                            Text(item.timestampLabel).font(.caption.bold())
-                            Spacer()
-                            Text("\(item.steps)p • \(item.heartRate)bpm • \(item.spo2)%")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .padding(12)
-                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Dados Persistidos (Disponíveis Offline)")
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 8) {
+                metricCard(title: "Passos", value: latestDay.map { "\($0.steps)" } ?? "--")
+                metricCard(title: "Calorias", value: latestDay.map { "\($0.calories) kcal" } ?? "--")
+                metricCard(title: "Sono", value: latestDay.map { "\($0.totalSleepMinutes / 60)h \($0.totalSleepMinutes % 60)m" } ?? "--")
+            }
+
+            HStack(spacing: 8) {
+                metricCard(title: "Batimentos", value: latestSample.map { "\($0.heartRate) bpm" } ?? "--")
+                metricCard(title: "SpO2", value: latestSample.map { "\($0.spo2)%" } ?? "--")
+                metricCard(title: "Pressão", value: latestSample.map { "\($0.systolicBP)/\($0.diastolicBP)" } ?? "--")
             }
         }
     }
@@ -212,16 +193,16 @@ struct BLEProofOfConceptView: View {
     private var consoleSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Console BLE em Tempo Real")
+                Text("Console BLE")
                     .font(.caption.bold())
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Limpar") { bleManager.clearLogs() }
+                Button("Limpar Logs") { bleManager.clearLogs() }
                     .font(.caption)
             }
 
             LazyVStack(alignment: .leading, spacing: 4) {
-                ForEach(bleManager.logs.prefix(40)) { entry in
+                ForEach(bleManager.logs.prefix(30)) { entry in
                     Text("[\(entry.formattedTime)] \(entry.direction.rawValue) \(entry.message)")
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(entry.direction == .error ? .red : (entry.direction == .tx ? .blue : .primary))

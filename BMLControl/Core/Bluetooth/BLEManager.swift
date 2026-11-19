@@ -16,9 +16,11 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var isConnected: Bool = false
     @Published var connectedDeviceName: String = "Desconectado"
     @Published var discoveredDevices: [DiscoveredWatch] = []
-    @Published var telemetry = BMLTelemetrySnapshot()
     @Published var logs: [BLELogEntry] = []
     @Published var hasSavedWatch: Bool = false
+
+    var onDecodedEvent: ((BMLDecodedEvent) -> Void)?
+    var onSyncStarted: (() -> Void)?
 
     private var centralManager: CBCentralManager!
     private var connectedPeripheral: CBPeripheral?
@@ -81,13 +83,14 @@ final class BLEManager: NSObject, ObservableObject {
         centralManager.cancelPeripheralConnection(peripheral)
     }
 
-    // MARK: - Comandos de Escrita (TX)
+    // MARK: - Comandos Validados (TX)
 
     func sendSyncTime() {
         sendCommand(BMLCommandBuilder.syncTime(), label: "Sincronizar Hora (0x93)")
     }
 
     func sendSyncData() {
+        onSyncStarted?()
         sendCommand(BMLCommandBuilder.syncData(), label: "Sincronizar Histórico (0x51)")
     }
 
@@ -101,10 +104,6 @@ final class BLEManager: NSObject, ObservableObject {
 
     func sendTimeFormat(is24Hour: Bool) {
         sendCommand(BMLCommandBuilder.set24HourFormat(is24Hour: is24Hour), label: "Formato \(is24Hour ? "24h" : "12h") (0x7C)")
-    }
-
-    func sendDoNotDisturb(enabled: Bool) {
-        sendCommand(BMLCommandBuilder.setDoNotDisturb(enabled: enabled), label: "Não Perturbe \(enabled ? "ON" : "OFF") (0x76)")
     }
 
     func sendStepGoal(_ steps: Int) {
@@ -255,8 +254,9 @@ extension BLEManager: CBPeripheralDelegate {
         Task { @MainActor in
             guard let data = characteristic.value else { return }
             let hex = data.map { String(format: "%02X", $0) }.joined(separator: " ")
-            if let decoded = BMLPacketParser.parse(data, into: &telemetry) {
-                log(.rx, "\(decoded) | \(hex)")
+            if let output = BMLPacketParser.decode(data) {
+                log(.rx, "\(output.logDescription) | \(hex)")
+                onDecodedEvent?(output.event)
             } else {
                 log(.rx, "Não mapeado: \(hex)")
             }

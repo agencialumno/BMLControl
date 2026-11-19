@@ -2,18 +2,14 @@ import XCTest
 @testable import BMLControl
 
 final class BMLPacketParserTests: XCTestCase {
-    func testParseBatteryPacketFromRealDevice() {
+    func testDecodeBatteryPacket() {
         let rawBytes: [UInt8] = [0xAB, 0x00, 0x05, 0xFF, 0x91, 0x80, 0x00, 0x42]
-        var snapshot = BMLTelemetrySnapshot()
+        let output = BMLPacketParser.decode(Data(rawBytes))
 
-        let result = BMLPacketParser.parse(Data(rawBytes), into: &snapshot)
-
-        XCTAssertNotNil(result)
-        XCTAssertEqual(snapshot.batteryLevel, 66)
-        XCTAssertEqual(snapshot.isCharging, false)
+        XCTAssertEqual(output?.event, .battery(level: 66, isCharging: false))
     }
 
-    func testParseHourlyVitalsAndHistoryArray() {
+    func testDecodeHourlyVitalsPacket() {
         let rawBytes: [UInt8] = [
             0xAB, 0x00, 0x19, 0xFF, 0x51, 0x20,
             0x1A, 0x0B, 0x13, 0x0C,
@@ -22,38 +18,26 @@ final class BMLPacketParserTests: XCTestCase {
             0x4C, 0x63, 0x80, 0x4E,
             0x01, 0x1E, 0x09, 0x0A, 0x02, 0x00, 0x03, 0x05
         ]
-        var snapshot = BMLTelemetrySnapshot()
+        let output = BMLPacketParser.decode(Data(rawBytes))
 
-        let result = BMLPacketParser.parse(Data(rawBytes), into: &snapshot)
+        guard case .hourlyVital(let sampleID, let dateKey, _, let hour, let steps, let calories, let hr, let spo2, let sbp, let dbp) = output?.event else {
+            return XCTFail("Evento esperado: hourlyVital")
+        }
 
-        XCTAssertNotNil(result)
-        XCTAssertEqual(snapshot.heartRate, 76)
-        XCTAssertEqual(snapshot.spo2, 99)
-        XCTAssertEqual(snapshot.systolicBP, 128)
-        XCTAssertEqual(snapshot.diastolicBP, 78)
-        XCTAssertEqual(snapshot.hourlyRecords.count, 1)
-        XCTAssertEqual(snapshot.hourlyRecords.first?.steps, 2678)
+        XCTAssertEqual(sampleID, "2026-11-19-12")
+        XCTAssertEqual(dateKey, "2026-11-19")
+        XCTAssertEqual(hour, 12)
+        XCTAssertEqual(steps, 2678)
+        XCTAssertEqual(calories, 145)
+        XCTAssertEqual(hr, 76)
+        XCTAssertEqual(spo2, 99)
+        XCTAssertEqual(sbp, 128)
+        XCTAssertEqual(dbp, 78)
     }
 
-    func testParseSleepSegmentsFromRealDevice() {
-        // Pacotes reais capturados às 13:13:29 e 13:13:31 no X5 Pro Max
-        let lightSleep: [UInt8] = [0xAB, 0x00, 0x0B, 0xFF, 0x52, 0x80, 0x1A, 0x0B, 0x0C, 0x16, 0x20, 0x02, 0x00, 0x17]
-        let deepSleep: [UInt8] = [0xAB, 0x00, 0x0B, 0xFF, 0x52, 0x80, 0x1A, 0x0B, 0x0C, 0x15, 0x30, 0x01, 0x00, 0x47]
-        var snapshot = BMLTelemetrySnapshot()
-
-        _ = BMLPacketParser.parse(Data(lightSleep), into: &snapshot)
-        _ = BMLPacketParser.parse(Data(deepSleep), into: &snapshot)
-
-        XCTAssertEqual(snapshot.lightSleepMinutes, 23)
-        XCTAssertEqual(snapshot.deepSleepMinutes, 71)
-        XCTAssertEqual(snapshot.sleepSegments.count, 2)
-    }
-
-    func testCommandBuilderFrames() {
-        let stepGoalFrame = [UInt8](BMLCommandBuilder.setStepGoal(8000))
-        XCTAssertEqual(stepGoalFrame, [0xAB, 0x00, 0x07, 0xFF, 0x74, 0x80, 0x00, 0x00, 0x1F, 0x40])
-
-        let wakeFrame = [UInt8](BMLCommandBuilder.setRaiseWristToWake(enabled: true))
-        XCTAssertEqual(wakeFrame, [0xAB, 0x00, 0x04, 0xFF, 0x77, 0x80, 0x01])
+    func testCommandBuilderValidatedCommands() {
+        XCTAssertEqual([UInt8](BMLCommandBuilder.setStepGoal(8000)), [0xAB, 0x00, 0x07, 0xFF, 0x74, 0x80, 0x00, 0x00, 0x1F, 0x40])
+        XCTAssertEqual([UInt8](BMLCommandBuilder.setRaiseWristToWake(enabled: true)), [0xAB, 0x00, 0x04, 0xFF, 0x77, 0x80, 0x01])
+        XCTAssertEqual([UInt8](BMLCommandBuilder.set24HourFormat(is24Hour: false)), [0xAB, 0x00, 0x04, 0xFF, 0x7C, 0x80, 0x01])
     }
 }

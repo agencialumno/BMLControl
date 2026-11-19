@@ -1,7 +1,7 @@
 import Foundation
 
 enum BMLCommandBuilder {
-    // MARK: - Comandos Confirmados (Fases 2 e 3)
+    // MARK: - Comandos Validados no Hardware BML X Pro Max 5 (Fases 2 a 4)
 
     /// Sincroniza data e hora exata do iPhone no relógio (Comando 0x93 — Confirmado).
     static func syncTime(for date: Date = Date()) -> Data {
@@ -42,24 +42,17 @@ enum BMLCommandBuilder {
         return Data([0xAB, 0x00, 0x04, 0xFF, 0x71, 0x80, activate ? 0x01 : 0x00])
     }
 
-    // MARK: - Comandos de Configuração Wearfit (Hipótese ainda não testada — Validar na Fase 4)
-
-    /// Ativa ou desativa o gesto de levantar o pulso para acender a tela (Comando 0x77).
+    /// Ativa ou desativa o gesto de levantar o pulso para acender a tela (Comando 0x77 — Confirmado na Fase 4).
     static func setRaiseWristToWake(enabled: Bool) -> Data {
         return Data([0xAB, 0x00, 0x04, 0xFF, 0x77, 0x80, enabled ? 0x01 : 0x00])
     }
 
-    /// Alterna entre formato 24 horas (0x00) e 12 horas AM/PM (0x01) (Comando 0x7C).
+    /// Alterna entre formato 24 horas (0x00) e 12 horas AM/PM (0x01) (Comando 0x7C — Confirmado na Fase 4).
     static func set24HourFormat(is24Hour: Bool) -> Data {
         return Data([0xAB, 0x00, 0x04, 0xFF, 0x7C, 0x80, is24Hour ? 0x00 : 0x01])
     }
 
-    /// Ativa ou desativa o Modo Não Perturbe no relógio (Comando 0x76).
-    static func setDoNotDisturb(enabled: Bool) -> Data {
-        return Data([0xAB, 0x00, 0x04, 0xFF, 0x76, 0x80, enabled ? 0x01 : 0x00])
-    }
-
-    /// Define a meta diária de passos em 4 bytes Big-Endian (Comando 0x74).
+    /// Define a meta diária de passos em 4 bytes Big-Endian (Comando 0x74 — Confirmado na Fase 4).
     static func setStepGoal(_ steps: Int) -> Data {
         let clamped = UInt32(max(1000, min(steps, 100_000)))
         return Data([
