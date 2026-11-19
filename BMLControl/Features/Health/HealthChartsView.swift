@@ -276,7 +276,7 @@ struct HealthChartsView: View {
     }
 }
 
-// MARK: - Subcomponentes de Gráficos (Isolados para Compilação Rápida)
+// MARK: - Subcomponentes de Gráficos
 
 private struct HeartRateChartCard: View {
     let points: [VitalChartPoint]
@@ -287,6 +287,8 @@ private struct HeartRateChartCard: View {
         let avg = valid.isEmpty ? 0 : Int(valid.map(\.avgHeartRate).reduce(0, +) / Double(valid.count))
         let minVal = valid.map(\.minHeartRate).min() ?? 0
         let maxVal = valid.map(\.maxHeartRate).max() ?? 0
+        let strideStep = timeframe == .month ? 5 : 1
+        let xLabels = valid.enumerated().compactMap { $0.offset % strideStep == 0 ? $0.element.label : nil }
 
         VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -318,6 +320,15 @@ private struct HeartRateChartCard: View {
                 .foregroundStyle(BMLTheme.accentHeart)
             }
             .chartYScale(domain: 40...180)
+            .chartXAxis {
+                AxisMarks(values: xLabels) { _ in
+                    AxisGridLine()
+                    AxisValueLabel()
+                }
+            }
+            .chartPlotStyle { plotArea in
+                plotArea.clipped()
+            }
             .frame(height: 170)
         }
         .bmlCard()
@@ -331,6 +342,8 @@ private struct SpO2ChartCard: View {
     var body: some View {
         let valid = points.filter { $0.avgSpO2 > 0 }
         let avg = valid.isEmpty ? 0 : Int(valid.map(\.avgSpO2).reduce(0, +) / Double(valid.count))
+        let strideStep = timeframe == .month ? 5 : 1
+        let xLabels = valid.enumerated().compactMap { $0.offset % strideStep == 0 ? $0.element.label : nil }
 
         VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -346,13 +359,23 @@ private struct SpO2ChartCard: View {
             Chart(valid) { item in
                 BarMark(
                     x: .value("Período", item.label),
-                    y: .value("SpO2", item.avgSpO2)
+                    yStart: .value("Base", 85),
+                    yEnd: .value("SpO2", max(85, min(100, item.avgSpO2)))
                 )
                 .foregroundStyle(BMLTheme.accentOxygen.gradient)
                 .cornerRadius(4)
             }
             .chartYScale(domain: 85...100)
-            .frame(height: 150)
+            .chartXAxis {
+                AxisMarks(values: xLabels) { _ in
+                    AxisGridLine()
+                    AxisValueLabel()
+                }
+            }
+            .chartPlotStyle { plotArea in
+                plotArea.clipped()
+            }
+            .frame(height: 155)
         }
         .bmlCard()
     }
@@ -364,6 +387,8 @@ private struct BloodPressureChartCard: View {
 
     var body: some View {
         let valid = points.filter { $0.avgSystolic > 0 && $0.avgDiastolic > 0 }
+        let strideStep = timeframe == .month ? 5 : 1
+        let xLabels = valid.enumerated().compactMap { $0.offset % strideStep == 0 ? $0.element.label : nil }
 
         Group {
             if !valid.isEmpty {
@@ -386,6 +411,15 @@ private struct BloodPressureChartCard: View {
                         .foregroundStyle(BMLTheme.accentOxygen)
                     }
                     .chartYScale(domain: 50...180)
+                    .chartXAxis {
+                        AxisMarks(values: xLabels) { _ in
+                            AxisGridLine()
+                            AxisValueLabel()
+                        }
+                    }
+                    .chartPlotStyle { plotArea in
+                        plotArea.clipped()
+                    }
                     .frame(height: 150)
 
                     HStack(spacing: 16) {
@@ -408,6 +442,9 @@ private struct StepsActivityChartCard: View {
     let stepGoal: Int
 
     var body: some View {
+        let strideStep = timeframe == .month ? 5 : 1
+        let xLabels = points.enumerated().compactMap { $0.offset % strideStep == 0 ? $0.element.label : nil }
+
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Label(timeframe == .day ? "Passos por Hora" : "Passos por Dia", systemImage: "chart.bar.fill")
@@ -437,6 +474,12 @@ private struct StepsActivityChartCard: View {
                         .foregroundStyle(BMLTheme.accentEnergy)
                 }
             }
+            .chartXAxis {
+                AxisMarks(values: xLabels) { _ in
+                    AxisGridLine()
+                    AxisValueLabel()
+                }
+            }
             .frame(height: 190)
         }
         .bmlCard()
@@ -447,6 +490,9 @@ private struct SleepStagesChartCard: View {
     let points: [SleepChartPoint]
 
     var body: some View {
+        let strideStep = points.count > 10 ? 5 : 1
+        let xLabels = points.enumerated().compactMap { $0.offset % strideStep == 0 ? $0.element.label : nil }
+
         VStack(alignment: .leading, spacing: 10) {
             Label("Distribuição de Sono (Minutos)", systemImage: "moon.fill")
                 .font(BMLTypography.sectionTitle)
@@ -464,6 +510,12 @@ private struct SleepStagesChartCard: View {
                     y: .value("Leve", item.lightMinutes)
                 )
                 .foregroundStyle(BMLTheme.accentOxygen)
+            }
+            .chartXAxis {
+                AxisMarks(values: xLabels) { _ in
+                    AxisGridLine()
+                    AxisValueLabel()
+                }
             }
             .frame(height: 170)
 
