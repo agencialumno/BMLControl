@@ -10,7 +10,6 @@ struct MainTabView: View {
     @Query(sort: \HourlyVitalSample.sampleID, order: .reverse) private var hourlySamples: [HourlyVitalSample]
     @Query(sort: \SleepSegmentRecord.segmentID, order: .reverse) private var sleepSegments: [SleepSegmentRecord]
 
-    @State private var selectedHealthSegment = 0
     @State private var showingPurgeAlert = false
 
     var body: some View {
@@ -20,10 +19,15 @@ struct MainTabView: View {
                     Label("Resumo", systemImage: "square.grid.2x2.fill")
                 }
 
-            healthTab
-                .tabItem {
-                    Label("Saúde", systemImage: "heart.text.square.fill")
-                }
+            HealthChartsView(
+                dailyRecords: dailyRecords,
+                hourlySamples: hourlySamples,
+                sleepSegments: sleepSegments,
+                stepGoal: settingsStore.dailyStepGoal
+            )
+            .tabItem {
+                Label("Saúde", systemImage: "heart.text.square.fill")
+            }
 
             watchFacesTab
                 .tabItem {
@@ -60,7 +64,6 @@ struct MainTabView: View {
                         settingsStore: settingsStore
                     )
 
-                    // Card Principal de Passos e Meta
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
                             Label("Atividade Diária", systemImage: "figure.walk")
@@ -97,7 +100,6 @@ struct MainTabView: View {
                     }
                     .bmlCard()
 
-                    // Grade de Sinais Vitais e Sono
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: BMLTheme.cardSpacing) {
                         StatTileView(
                             title: "Batimentos",
@@ -144,7 +146,6 @@ struct MainTabView: View {
                         )
                     }
 
-                    // Ações Rápidas
                     if bleManager.isConnected {
                         HStack(spacing: 10) {
                             Button(action: { bleManager.sendSyncData() }) {
@@ -167,133 +168,6 @@ struct MainTabView: View {
             }
             .background(BMLTheme.backgroundPrimary)
             .navigationTitle("BML Control")
-        }
-    }
-
-    // MARK: - ABA 2: SAÚDE, ATIVIDADES E SONO (MÓDULOS B, C e D)
-    private var healthTab: some View {
-        NavigationStack {
-            VStack(spacing: 12) {
-                Picker("Categoria", selection: $selectedHealthSegment) {
-                    Text("Sinais Vitais").tag(0)
-                    Text("Atividades").tag(1)
-                    Text("Sono").tag(2)
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal, BMLTheme.screenPadding)
-
-                ScrollView {
-                    VStack(spacing: BMLTheme.cardSpacing) {
-                        if selectedHealthSegment == 0 {
-                            vitalsListSection
-                        } else if selectedHealthSegment == 1 {
-                            activitiesListSection
-                        } else {
-                            sleepListSection
-                        }
-                    }
-                    .padding(BMLTheme.screenPadding)
-                }
-            }
-            .background(BMLTheme.backgroundPrimary)
-            .navigationTitle("Saúde & Corpo")
-        }
-    }
-
-    private var vitalsListSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Nota: Medições ópticas de smartwatches são referências para bem-estar e não substituem equipamentos médicos.")
-                .font(BMLTypography.caption)
-                .foregroundStyle(.secondary)
-                .bmlCard(padding: 12)
-
-            if hourlySamples.isEmpty {
-                ContentUnavailableView(
-                    "Nenhuma amostra vital salva",
-                    systemImage: "heart.slash",
-                    description: Text("Conecte o X5 Pro Max e toque em Sincronizar para importar o histórico.")
-                )
-            } else {
-                ForEach(hourlySamples.prefix(24)) { sample in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("\(sample.dateKey) • \(String(format: "%02d:00", sample.hour))")
-                                .font(BMLTypography.sectionTitle)
-                            Text("PA Est.: \(sample.systolicBP)/\(sample.diastolicBP) mmHg")
-                                .font(BMLTypography.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        HStack(spacing: 12) {
-                            Label("\(sample.heartRate) bpm", systemImage: "heart.fill")
-                                .foregroundStyle(BMLTheme.accentHeart)
-                            Label("\(sample.spo2)%", systemImage: "lungs.fill")
-                                .foregroundStyle(BMLTheme.accentOxygen)
-                        }
-                        .font(BMLTypography.cardLabel)
-                    }
-                    .bmlCard(padding: 12)
-                }
-            }
-        }
-    }
-
-    private var activitiesListSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if dailyRecords.isEmpty {
-                ContentUnavailableView(
-                    "Sem histórico de atividades",
-                    systemImage: "figure.walk",
-                    description: Text("Os passos e calorias sincronizados aparecerão organizados por dia aqui.")
-                )
-            } else {
-                ForEach(dailyRecords) { day in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(day.dateKey)
-                                .font(BMLTypography.sectionTitle)
-                            Text(String(format: "%.2f km • %d kcal", day.estimatedDistanceKm, day.calories))
-                                .font(BMLTypography.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Text("\(day.steps) passos")
-                            .font(BMLTypography.compactMetric)
-                            .foregroundStyle(BMLTheme.accentVitality)
-                    }
-                    .bmlCard(padding: 14)
-                }
-            }
-        }
-    }
-
-    private var sleepListSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if sleepSegments.isEmpty {
-                ContentUnavailableView(
-                    "Sem registros de sono",
-                    systemImage: "moon.zzz",
-                    description: Text("Durma com o BML X Pro Max 5 e sincronize pela manhã para ver os blocos de sono profundo e leve.")
-                )
-            } else {
-                ForEach(sleepSegments.prefix(30)) { segment in
-                    HStack {
-                        Image(systemName: segment.isDeepSleep ? "moon.stars.fill" : "moon.fill")
-                            .foregroundStyle(segment.isDeepSleep ? BMLTheme.accentSleep : BMLTheme.accentOxygen)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(segment.isDeepSleep ? "Sono Profundo" : "Sono Leve")
-                                .font(BMLTypography.sectionTitle)
-                            Text(segment.startTimestamp.formatted(date: .abbreviated, time: .shortened))
-                                .font(BMLTypography.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Text("\(segment.durationMinutes) min")
-                            .font(BMLTypography.compactMetric)
-                    }
-                    .bmlCard(padding: 12)
-                }
-            }
         }
     }
 
@@ -406,7 +280,6 @@ struct MainTabView: View {
                     }
                     .bmlCard()
 
-                    // Console BLE Técnico Preservado
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Text("Console Técnico BLE (6E400002 / 6E400003)")

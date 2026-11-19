@@ -30,7 +30,11 @@ final class BLEManager: NSObject, ObservableObject {
     override init() {
         super.init()
         hasSavedWatch = UserDefaults.standard.string(forKey: savedPeripheralKey) != nil
-        centralManager = CBCentralManager(delegate: self, queue: .main)
+        centralManager = CBCentralManager(
+            delegate: self,
+            queue: .main,
+            options: [CBCentralManagerOptionRestoreIdentifierKey: "com.victor.bmlcontrol.central"]
+        )
     }
 
     func startScan() {
@@ -140,6 +144,23 @@ final class BLEManager: NSObject, ObservableObject {
 }
 
 extension BLEManager: CBCentralManagerDelegate {
+    nonisolated func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
+        guard let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral],
+              let restored = peripherals.first else {
+            return
+        }
+        Task { @MainActor in
+            self.connectedPeripheral = restored
+            restored.delegate = self
+            if restored.state == .connected {
+                self.isConnected = true
+                self.connectedDeviceName = restored.name ?? BMLUUIDs.expectedDeviceName
+                restored.discoverServices([BMLUUIDs.primaryService, BMLUUIDs.secondaryService])
+                self.log(.info, "Sessão BLE restaurada em segundo plano.")
+            }
+        }
+    }
+
     nonisolated func centralManagerDidUpdateState(_ central: CBCentralManager) {
         Task { @MainActor in
             switch central.state {
