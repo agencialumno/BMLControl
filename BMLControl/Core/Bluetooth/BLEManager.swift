@@ -151,16 +151,6 @@ final class BLEManager: NSObject, ObservableObject {
         sendCommand(BMLCommandBuilder.setNotificationMask(mask), label: String(format: "Alertas ANCS 0x%04X (0x72)", mask))
     }
 
-    func sendAlarm(_ alarm: WatchAlarmItem) {
-        let packet = BMLCommandBuilder.setAlarm(
-            index: alarm.id,
-            enabled: alarm.isEnabled,
-            hour: alarm.hour,
-            minute: alarm.minute,
-            repeatMask: alarm.repeatMask
-        )
-        sendCommand(packet, label: "Alarme #\(alarm.id + 1) \(alarm.formattedTime) (0x73)")
-    }
 
     func sendWeather(_ weather: WeatherSnapshot) {
         let packet = BMLCommandBuilder.syncWeather(
@@ -188,6 +178,35 @@ final class BLEManager: NSObject, ObservableObject {
         let writeType: CBCharacteristicWriteType = char.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
         peripheral.writeValue(data, for: char, type: writeType)
     }
+
+    func probeWatchFaceHandshake() {
+    Task {
+        log(.info, "Iniciando sondagem de Watch Face (Fase 9)...")
+
+        // 1. Consulta status/capacidade de mostradores no canal de comando (6E400002)
+        if let cmdStatus = Data(hexString: "AB0004FF248000") {
+            sendCommand(cmdStatus, label: "WF Status (0x24)")
+        }
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        // 2. Consulta parâmetros de display/flash (0xA0)
+        if let cmdInfo = Data(hexString: "AB0004FFA08000") {
+            sendCommand(cmdInfo, label: "WF Info (0xA0)")
+        }
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        // 3. Solicita abertura de transferência de mostrador (0x8A) com tamanho simulado de 1024 bytes
+        if let cmdPrepare = Data(hexString: "AB0009FF8A80000000040001") {
+            sendCommand(cmdPrepare, label: "WF Prepare (0x8A)")
+        }
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        // 4. Ping de handshake no canal dedicado de Watch Face (6E400012)
+        if let wfPing = Data(hexString: "AB0004FFA08000") {
+            sendWatchFaceData(wfPing, label: "WF Channel Ping (6E400012)")
+        }
+    }
+}
 
     func clearLogs() {
         logs.removeAll()
