@@ -1,107 +1,118 @@
 import Foundation
 import CoreBluetooth
-import Combine
+import AudioToolbox
 
+struct DiscoveredWatch: Identifiable {
+    let id: UUID
+    let peripheral: CBPeripheral
+    let name: String
+    let rssi: Int
+    let macHex: String?
+}
+
+@MainActor
 final class BLEManager: NSObject, ObservableObject {
-    // MARK: - UUIDs do BML X Pro Max 5
-    static let nordicUARTServiceUUID    = CBUUID(string: "6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
-    static let uartRXCharacteristicUUID = CBUUID(string: "6E400002-B5A3-F393-E0A9-E50E24DCCA9E")
-    static let uartTXCharacteristicUUID = CBUUID(string: "6E400003-B5A3-F393-E0A9-E50E24DCCA9E")
-
-    static let watchFaceServiceUUID     = CBUUID(string: "6E400011-B5A3-F393-E0A9-E50E24DCCA9E")
-    static let watchFaceWriteUUID       = CBUUID(string: "6E400012-B5A3-F393-E0A9-E50E24DCCA9E")
-    static let watchFaceNotifyUUID      = CBUUID(string: "6E400013-B5A3-F393-E0A9-E50E24DCCA9E")
-
-    // MARK: - Estado Publicado para a Interface (SwiftUI)
+    @Published var bluetoothStateText: String = "Inicializando Bluetooth..."
     @Published var isScanning: Bool = false
     @Published var isConnected: Bool = false
     @Published var isANCSAuthorized: Bool = false
-    @Published var bluetoothState: CBManagerState = .unknown
-    @Published var discoveredPeripherals: [CBPeripheral] = []
-    @Published var connectedPeripheral: CBPeripheral?
-    @Published var batteryLevel: Int?
-    @Published var lastReceivedHex: String = ""
-    @Published var statusMessage: String = "Pronto para conectar"
+    @Published var connectedDeviceName: String = "Desconectado"
+    @Published var discoveredDevices: [DiscoveredWatch] = []
+    @Published var logs: [BLELogEntry] = []
+    @Published var hasSavedWatch: Bool = false
+    @Published var lastRemoteCameraTrigger: Date?
+    @Published var isFindingPhoneAlertActive: Bool = false
 
-    // MARK: - Propriedades Internas CoreBluetooth
+    var onDecodedEvent: ((BMLDecodedEvent) -> Void)?
+    var onSyncStarted: (() -> Void)?
+
     private var centralManager: CBCentralManager!
-    private var uartRXCharacteristic: CBCharacteristic?
-    private var uartTXCharacteristic: CBCharacteristic?
-    private var watchFaceWriteCharacteristic: CBCharacteristic?
-    private var watchFaceNotifyCharacteristic: CBCharacteristic?
-
-    private let savedPeripheralKey = "BML_LastConnectedWatchUUID"
+    private var connectedPeripheral: CBPeripheral?
+    private var primaryWriteCharacteristic: CBCharacteristic?
+    private var secondaryWriteCharacteristic: CBCharacteristic?
+    private let savedPeripheralKey = "bml_saved_watch_uuid"
 
     override init() {
         super.init()
-        centralManager = CBCentralManager(delegate: self, queue: .main)
+        hasSavedWatch = UserDefaults.standard.string(forKey: savedPeripheralKey) != nil
+        centralManager = CBCentralManager(
+            delegate: self,
+            queue: .main,
+            options: [CBCentralManagerOptionRestoreIdentifierKey: "com.victor.bmlcontrol.central"]
+        )
     }
 
-    // MARK: - Busca e Conexão (com captura de conexão ativa do iOS + ANCS)
-    func startScanning() {
-    guard centralManager.state == .poweredOn else {
-        statusMessage = "Ative o Bluetooth do iPhone"
-        return
+    func startScan() {
+        guard centralManager.state == .poweredOn else {
+            log(.error, "Bluetooth não está ligado no iPhone.")
+            return
+        }
+        discoveredDevices.removeAll()
+
+        // 1. Verifica primeiro se o iOS já mantém o relógio conectado em segundo plano (ANCS)
+        if let systemWatch = findSystemConnectedWatch() {
+            let watch = DiscoveredWatch(
+                id: systemWatch.identifier,
+                peripheral: systemWatch,
+                name: systemWatch.name ?? BMLUUIDs.expectedDeviceName,
+                rssi: -50,
+                macHex: nil
+            )
+            discoveredDevices.append(watch)
+            log(.info, "Relógio ativo detectado no iOS: \(watch.name). Conectando...")
+            connect(to: watch)
+            return
+        }
+
+        // 2. Caso não esteja conectado no sistema, inicia a varredura BLE padrão
+        isScanning = true
+        log(.info, "Buscando BML X Pro Max 5...")
+        centralManager.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
     }
 
-    discoveredPeripherals.removeAll()
-
-    // Consulta todos os serviços anunciados pelo firmware enquanto o iOS segura o ANCS
-    let knownServiceUUIDs: [CBUUID] = [
-        Self.nordicUARTServiceUUID,
-        Self.watchFaceServiceUUID,
-        CBUUID(string: "0000FF12-0000-1000-8000-00805F9B34FB"),
-        CBUUID(string: "0000FE59-0000-1000-8000-00805F9B34FB")
-    ]
-
-    let systemConnected = centralManager.retrieveConnectedPeripherals(withServices: knownServiceUUIDs)
-    if let existingWatch = systemConnected.first(where: {
-        ($0.name ?? "").localizedCaseInsensitiveContains("X5") ||
-        ($0.name ?? "").localizedCaseInsensitiveContains("BML")
-    }) ?? systemConnected.first {
-        discoveredPeripherals.append(existingWatch)
-        statusMessage = "Relógio detectado no sistema. Conectando..."
-        connect(to: existingWatch)
-        return
-    }
-
-    // Fallback: recupera pelo UUID salvo localmente
-    if let uuidString = UserDefaults.standard.string(forKey: savedPeripheralKey),
-       let uuid = UUID(uuidString: uuidString),
-       let knownWatch = centralManager.retrievePeripherals(withIdentifiers: [uuid]).first {
-        discoveredPeripherals.append(knownWatch)
-        connect(to: knownWatch)
-        return
-    }
-
-    // Varredura BLE padrão
-    isScanning = true
-    statusMessage = "Buscando BML X Pro Max 5..."
-    centralManager.scanForPeripherals(withServices: nil, options: [
-        CBCentralManagerScanOptionAllowDuplicatesKey: false
-    ])
-}
-
-    func stopScanning() {
+    func stopScan() {
         centralManager.stopScan()
         isScanning = false
-        if !isConnected {
-            statusMessage = "Busca encerrada"
+    }
+
+    func connect(to watch: DiscoveredWatch) {
+        stopScan()
+        UserDefaults.standard.set(watch.id.uuidString, forKey: savedPeripheralKey)
+        hasSavedWatch = true
+        connectPeripheral(watch.peripheral, displayName: watch.name)
+    }
+
+    func attemptAutoReconnect() {
+        guard centralManager.state == .poweredOn, !isConnected else {
+            return
+        }
+
+        // Prioriza a conexão já mantida pelo iOS para notificações ANCS
+        if let systemWatch = findSystemConnectedWatch() {
+            UserDefaults.standard.set(systemWatch.identifier.uuidString, forKey: savedPeripheralKey)
+            hasSavedWatch = true
+            log(.info, "Reconectando ao relógio ativo no sistema (ANCS)...")
+            connectPeripheral(systemWatch, displayName: systemWatch.name ?? BMLUUIDs.expectedDeviceName)
+            return
+        }
+
+        guard let uuidString = UserDefaults.standard.string(forKey: savedPeripheralKey),
+              let uuid = UUID(uuidString: uuidString) else {
+            return
+        }
+
+        let knownPeripherals = centralManager.retrievePeripherals(withIdentifiers: [uuid])
+        if let peripheral = knownPeripherals.first {
+            log(.info, "Reconectando automaticamente ao relógio salvo...")
+            connectPeripheral(peripheral, displayName: peripheral.name ?? BMLUUIDs.expectedDeviceName)
         }
     }
 
-    func connect(to peripheral: CBPeripheral) {
-        stopScanning()
-        connectedPeripheral = peripheral
-        peripheral.delegate = self
-        statusMessage = "Conectando a \(peripheral.name ?? "X5 Pro Max")..."
-
-        UserDefaults.standard.set(peripheral.identifier.uuidString, forKey: savedPeripheralKey)
-
-        // Solicita e mantém a permissão nativa de notificações do iOS (ANCS)
-        centralManager.connect(peripheral, options: [
-            CBConnectPeripheralOptionRequiresANCS: true
-        ])
+    func forgetSavedWatch() {
+        disconnect()
+        UserDefaults.standard.removeObject(forKey: savedPeripheralKey)
+        hasSavedWatch = false
+        log(.info, "Vínculo salvo do relógio removido.")
     }
 
     func disconnect() {
@@ -109,198 +120,300 @@ final class BLEManager: NSObject, ObservableObject {
         centralManager.cancelPeripheralConnection(peripheral)
     }
 
-    // MARK: - Envio de Comandos (NUS 6E400002)
-    func sendCommand(_ data: Data) {
-        guard let peripheral = connectedPeripheral,
-              let rxChar = uartRXCharacteristic else {
-            statusMessage = "Relógio não conectado"
+    // MARK: - Comandos Validados e Funções Inteligentes (TX)
+
+    func sendSyncTime() {
+        sendCommand(BMLCommandBuilder.syncTime(), label: "Sincronizar Hora (0x93)")
+    }
+
+    func sendSyncData() {
+        onSyncStarted?()
+        sendCommand(BMLCommandBuilder.syncData(), label: "Sincronizar Histórico (0x51)")
+    }
+
+    func sendFindWatch(activate: Bool = true) {
+        sendCommand(BMLCommandBuilder.findWatch(activate: activate), label: activate ? "Vibrar ON (0x71)" : "Vibrar OFF (0x71)")
+    }
+
+    func sendRaiseWrist(enabled: Bool) {
+        sendCommand(BMLCommandBuilder.setRaiseWristToWake(enabled: enabled), label: "Levantar Pulso \(enabled ? "ON" : "OFF") (0x77)")
+    }
+
+    func sendTimeFormat(is24Hour: Bool) {
+        sendCommand(BMLCommandBuilder.set24HourFormat(is24Hour: is24Hour), label: "Formato \(is24Hour ? "24h" : "12h") (0x7C)")
+    }
+
+    func sendStepGoal(_ steps: Int) {
+        sendCommand(BMLCommandBuilder.setStepGoal(steps), label: "Meta \(steps) passos (0x74)")
+    }
+
+    func sendNotificationMask(_ mask: UInt16) {
+        sendCommand(BMLCommandBuilder.setNotificationMask(mask), label: String(format: "Alertas ANCS 0x%04X (0x72)", mask))
+    }
+
+    func sendAlarm(_ alarm: WatchAlarmItem) {
+        let packet = BMLCommandBuilder.setAlarm(
+            index: alarm.id,
+            enabled: alarm.isEnabled,
+            hour: alarm.hour,
+            minute: alarm.minute,
+            repeatMask: alarm.repeatMask
+        )
+        sendCommand(packet, label: "Alarme #\(alarm.id + 1) \(alarm.formattedTime) (0x73)")
+    }
+
+    func sendWeather(_ weather: WeatherSnapshot) {
+        let packet = BMLCommandBuilder.syncWeather(
+            conditionCode: weather.watchConditionCode,
+            currentTemp: weather.currentTemp,
+            minTemp: weather.minTemp,
+            maxTemp: weather.maxTemp
+        )
+        sendCommand(packet, label: "Clima \(weather.currentTemp)°C (0x7E)")
+    }
+
+    func sendRemoteCamera(enabled: Bool) {
+        sendCommand(BMLCommandBuilder.setRemoteCameraMode(enabled: enabled), label: "Câmera Remota \(enabled ? "ON" : "OFF") (0x79)")
+    }
+
+    // MARK: - Envio de Watch Face (Serviço Secundário 6E400011 -> 6E400012)
+
+    func sendWatchFaceData(_ data: Data, label: String = "Watch Face (6E400012)") {
+        guard let peripheral = connectedPeripheral, let char = secondaryWriteCharacteristic else {
+            log(.error, "Canal Watch Face 6E400012 indisponível.")
             return
         }
-
-        let writeType: CBCharacteristicWriteType = rxChar.properties.contains(.writeWithoutResponse)
-            ? .withoutResponse
-            : .withResponse
-
-        peripheral.writeValue(data, for: rxChar, type: writeType)
+        let hex = data.prefix(20).map { String(format: "%02X", $0) }.joined(separator: " ")
+        log(.tx, "[\(label)] \(hex)\(data.count > 20 ? "..." : "")")
+        let writeType: CBCharacteristicWriteType = char.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
+        peripheral.writeValue(data, for: char, type: writeType)
     }
 
-    func sendHexCommand(_ hexString: String) {
-        guard let data = Data(hexString: hexString) else { return }
-        sendCommand(data)
+    func clearLogs() {
+        logs.removeAll()
     }
 
-    // MARK: - Envio de Dados de Watch Face (Serviço 6E400011 -> 6E400012)
-    func sendWatchFaceData(_ data: Data) {
-        guard let peripheral = connectedPeripheral,
-              let wfChar = watchFaceWriteCharacteristic else {
-            statusMessage = "Canal de Watch Face indisponível"
-            return
+    // MARK: - Helpers Privados
+
+    private func findSystemConnectedWatch() -> CBPeripheral? {
+        let knownServices: [CBUUID] = [
+            BMLUUIDs.primaryService,
+            BMLUUIDs.secondaryService,
+            CBUUID(string: "0000FF12-0000-1000-8000-00805F9B34FB"),
+            CBUUID(string: "0000FE59-0000-1000-8000-00805F9B34FB")
+        ]
+
+        let connected = centralManager.retrieveConnectedPeripherals(withServices: knownServices)
+        if let savedUUIDString = UserDefaults.standard.string(forKey: savedPeripheralKey),
+           let savedUUID = UUID(uuidString: savedUUIDString),
+           let exactMatch = connected.first(where: { $0.identifier == savedUUID }) {
+            return exactMatch
         }
 
-        let writeType: CBCharacteristicWriteType = wfChar.properties.contains(.writeWithoutResponse)
-            ? .withoutResponse
-            : .withResponse
-
-        peripheral.writeValue(data, for: wfChar, type: writeType)
+        return connected.first(where: {
+            let name = $0.name ?? ""
+            return name.localizedCaseInsensitiveContains("X5") ||
+                   name.localizedCaseInsensitiveContains("Wearfit") ||
+                   name.localizedCaseInsensitiveContains("BML")
+        }) ?? connected.first
     }
-}
 
-// MARK: - CBCentralManagerDelegate
-extension BLEManager: CBCentralManagerDelegate {
-    func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        bluetoothState = central.state
-
-        switch central.state {
-        case .poweredOn:
-            statusMessage = "Bluetooth pronto"
-            startScanning()
-        case .poweredOff:
-            isConnected = false
-            isScanning = false
-            statusMessage = "Bluetooth desligado"
-        case .unauthorized:
-            statusMessage = "Permissão de Bluetooth negada nos Ajustes"
-        case .unsupported:
-            statusMessage = "Bluetooth LE não suportado"
-        default:
-            statusMessage = "Aguardando Bluetooth..."
+    private func triggerPhoneAlertFeedback() {
+        isFindingPhoneAlertActive = true
+        AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+        AudioServicesPlaySystemSound(1005)
+        Task {
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            isFindingPhoneAlertActive = false
         }
     }
 
-    func centralManager(_ central: CBCentralManager,
-                        didDiscover peripheral: CBPeripheral,
-                        advertisementData: [String: Any],
-                        rssi RSSI: NSNumber) {
-        let name = peripheral.name ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? ""
-        guard !name.isEmpty else { return }
-
-        if !discoveredPeripherals.contains(where: { $0.identifier == peripheral.identifier }) {
-            discoveredPeripherals.append(peripheral)
-        }
-
-        // Conecta automaticamente ao localizar o X5 Pro Max
-        if name.localizedCaseInsensitiveContains("X5 Pro") || name.localizedCaseInsensitiveContains("BML") {
-            connect(to: peripheral)
-        }
-    }
-
-    func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        isConnected = true
-        isANCSAuthorized = peripheral.ancsAuthorized
-        statusMessage = "Conectado a \(peripheral.name ?? "X5 Pro Max")"
-
-        peripheral.discoverServices([
-            Self.nordicUARTServiceUUID,
-            Self.watchFaceServiceUUID
+    private func connectPeripheral(_ peripheral: CBPeripheral, displayName: String) {
+        log(.info, "Conectando a \(displayName)...")
+        connectedPeripheral = peripheral
+        peripheral.delegate = self
+        centralManager.connect(peripheral, options: [
+            CBConnectPeripheralOptionRequiresANCS: true
         ])
     }
 
-    func centralManager(_ central: CBCentralManager,
-                        didFailToConnect peripheral: CBPeripheral,
-                        error: Error?) {
-        isConnected = false
-        statusMessage = "Falha ao conectar: \(error?.localizedDescription ?? "erro desconhecido")"
+    private func sendCommand(_ data: Data, label: String) {
+        guard let peripheral = connectedPeripheral, let char = primaryWriteCharacteristic else {
+            log(.error, "Canal 6E400002 indisponível.")
+            return
+        }
+        let hex = data.map { String(format: "%02X", $0) }.joined(separator: " ")
+        log(.tx, "[\(label)] \(hex)")
+        peripheral.writeValue(data, for: char, type: .withoutResponse)
     }
 
-    func centralManager(_ central: CBCentralManager,
-                        didDisconnectPeripheral peripheral: CBPeripheral,
-                        error: Error?) {
-        isConnected = false
-        uartRXCharacteristic = nil
-        uartTXCharacteristic = nil
-        watchFaceWriteCharacteristic = nil
-        watchFaceNotifyCharacteristic = nil
-        statusMessage = "Relógio desconectado"
-    }
-
-    // Atualiza em tempo real quando o usuário aceita ou revoga o alerta de notificações do iOS
-    func centralManager(_ central: CBCentralManager,
-                        didUpdateANCSAuthorizationFor peripheral: CBPeripheral) {
-        isANCSAuthorized = peripheral.ancsAuthorized
-        statusMessage = peripheral.ancsAuthorized
-            ? "Conectado (Notificações ANCS ativas)"
-            : "Conectado (Ative notificações nos Ajustes)"
+    private func log(_ direction: BLELogEntry.Direction, _ message: String) {
+        logs.insert(BLELogEntry(timestamp: Date(), direction: direction, message: message), at: 0)
+        if logs.count > 300 {
+            logs.removeLast()
+        }
     }
 }
 
-// MARK: - CBPeripheralDelegate
-extension BLEManager: CBPeripheralDelegate {
-    func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        guard error == nil, let services = peripheral.services else { return }
-
-        for service in services {
-            if service.uuid == Self.nordicUARTServiceUUID {
-                peripheral.discoverCharacteristics([
-                    Self.uartRXCharacteristicUUID,
-                    Self.uartTXCharacteristicUUID
-                ], for: service)
-            } else if service.uuid == Self.watchFaceServiceUUID {
-                peripheral.discoverCharacteristics([
-                    Self.watchFaceWriteUUID,
-                    Self.watchFaceNotifyUUID
-                ], for: service)
+extension BLEManager: CBCentralManagerDelegate {
+    nonisolated func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
+        guard let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral],
+              let restored = peripherals.first else {
+            return
+        }
+        let ancsOk = restored.ancsAuthorized
+        Task { @MainActor in
+            self.connectedPeripheral = restored
+            restored.delegate = self
+            if restored.state == .connected {
+                self.isConnected = true
+                self.isANCSAuthorized = ancsOk
+                self.connectedDeviceName = restored.name ?? BMLUUIDs.expectedDeviceName
+                restored.discoverServices([BMLUUIDs.primaryService, BMLUUIDs.secondaryService])
+                self.log(.info, "Sessão BLE restaurada em segundo plano.")
             }
         }
     }
 
-    func peripheral(_ peripheral: CBPeripheral,
-                    didDiscoverCharacteristicsFor service: CBService,
-                    error: Error?) {
-        guard error == nil, let characteristics = service.characteristics else { return }
-
-        for characteristic in characteristics {
-            switch characteristic.uuid {
-            case Self.uartRXCharacteristicUUID:
-                uartRXCharacteristic = characteristic
-            case Self.uartTXCharacteristicUUID:
-                uartTXCharacteristic = characteristic
-                peripheral.setNotifyValue(true, for: characteristic)
-            case Self.watchFaceWriteUUID:
-                watchFaceWriteCharacteristic = characteristic
-            case Self.watchFaceNotifyUUID:
-                watchFaceNotifyCharacteristic = characteristic
-                peripheral.setNotifyValue(true, for: characteristic)
+    nonisolated func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        Task { @MainActor in
+            switch central.state {
+            case .poweredOn:
+                bluetoothStateText = "Bluetooth Ativo"
+                log(.info, "Rádio Bluetooth ativo.")
+                attemptAutoReconnect()
+            case .poweredOff:
+                bluetoothStateText = "Bluetooth Desligado"
+            case .unauthorized:
+                bluetoothStateText = "Permissão Bluetooth Negada"
             default:
-                break
+                bluetoothStateText = "Bluetooth Indisponível"
             }
         }
     }
 
-    func peripheral(_ peripheral: CBPeripheral,
-                    didUpdateValueFor characteristic: CBCharacteristic,
-                    error: Error?) {
-        guard error == nil, let data = characteristic.value, !data.isEmpty else { return }
+    nonisolated func centralManager(
+        _ central: CBCentralManager,
+        didDiscover peripheral: CBPeripheral,
+        advertisementData: [String: Any],
+        rssi RSSI: NSNumber
+    ) {
+        Task { @MainActor in
+            let advName = advertisementData[CBAdvertisementDataLocalNameKey] as? String
+            let name = advName ?? peripheral.name ?? "Dispositivo"
 
-        let bytes = [UInt8](data)
-        let hex = bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
-        lastReceivedHex = hex
+            var extractedMac: String?
+            if let mfgData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data, mfgData.count >= 8 {
+                let macBytes = mfgData.suffix(6)
+                extractedMac = macBytes.map { String(format: "%02X", $0) }.joined(separator: ":")
+            }
 
-        // Leitura automática de bateria: AB 00 05 FF 91 80 00 [Porcentagem]
-        if characteristic.uuid == Self.uartTXCharacteristicUUID,
-           bytes.count >= 8,
-           bytes[0] == 0xAB,
-           bytes[4] == 0x91 {
-            batteryLevel = Int(bytes[7])
+            let isTarget = name.localizedCaseInsensitiveContains("X5") ||
+                           name.localizedCaseInsensitiveContains("Wearfit") ||
+                           extractedMac == "41:42:75:A4:3F:A2"
+
+            guard isTarget else { return }
+
+            if !discoveredDevices.contains(where: { $0.id == peripheral.identifier }) {
+                let watch = DiscoveredWatch(
+                    id: peripheral.identifier,
+                    peripheral: peripheral,
+                    name: name,
+                    rssi: RSSI.intValue,
+                    macHex: extractedMac
+                )
+                discoveredDevices.append(watch)
+                log(.info, "Encontrado: \(name) | RSSI: \(RSSI) dBm | MAC: \(extractedMac ?? "N/A")")
+            }
+        }
+    }
+
+    nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        let ancsOk = peripheral.ancsAuthorized
+        Task { @MainActor in
+            isConnected = true
+            isANCSAuthorized = ancsOk
+            connectedDeviceName = peripheral.name ?? "X5 Pro Max"
+            log(.info, "Conectado a \(connectedDeviceName) (ANCS: \(ancsOk ? "Ativo" : "Pendente")). Descobrindo serviços...")
+            peripheral.discoverServices([BMLUUIDs.primaryService, BMLUUIDs.secondaryService])
+        }
+    }
+
+    nonisolated func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        Task { @MainActor in
+            isConnected = false
+            connectedDeviceName = "Desconectado"
+            primaryWriteCharacteristic = nil
+            secondaryWriteCharacteristic = nil
+            log(.error, "Desconectado. \(error?.localizedDescription ?? "")")
+        }
+    }
+
+    nonisolated func centralManager(_ central: CBCentralManager, didUpdateANCSAuthorizationFor peripheral: CBPeripheral) {
+        let ancsOk = peripheral.ancsAuthorized
+        Task { @MainActor in
+            isANCSAuthorized = ancsOk
+            log(.info, ancsOk ? "Notificações iOS (ANCS) autorizadas." : "Notificações iOS (ANCS) pendentes nos Ajustes.")
         }
     }
 }
 
-// MARK: - Helper Hexadecimal
-extension Data {
-    init?(hexString: String) {
-        let cleanHex = hexString.replacingOccurrences(of: " ", with: "")
-        guard cleanHex.count % 2 == 0 else { return nil }
-
-        var data = Data(capacity: cleanHex.count / 2)
-        var index = cleanHex.startIndex
-
-        while index < cleanHex.endIndex {
-            let nextIndex = cleanHex.index(index, offsetBy: 2)
-            let byteString = cleanHex[index..<nextIndex]
-            guard let byte = UInt8(byteString, radix: 16) else { return nil }
-            data.append(byte)
-            index = nextIndex
+extension BLEManager: CBPeripheralDelegate {
+    nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        Task { @MainActor in
+            guard let services = peripheral.services else { return }
+            for service in services {
+                if service.uuid == BMLUUIDs.primaryService {
+                    peripheral.discoverCharacteristics([BMLUUIDs.primaryWriteRX, BMLUUIDs.primaryNotifyTX], for: service)
+                } else if service.uuid == BMLUUIDs.secondaryService {
+                    peripheral.discoverCharacteristics([BMLUUIDs.secondaryWriteRX, BMLUUIDs.secondaryNotifyTX], for: service)
+                }
+            }
         }
-        self = data
+    }
+
+    nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+        Task { @MainActor in
+            guard let chars = service.characteristics else { return }
+            for char in chars {
+                if char.uuid == BMLUUIDs.primaryWriteRX {
+                    primaryWriteCharacteristic = char
+                    log(.info, "Canal de escrita pronto (6E400002).")
+                } else if char.uuid == BMLUUIDs.secondaryWriteRX {
+                    secondaryWriteCharacteristic = char
+                    log(.info, "Canal Watch Face pronto (6E400012).")
+                } else if char.uuid == BMLUUIDs.primaryNotifyTX || char.uuid == BMLUUIDs.secondaryNotifyTX {
+                    peripheral.setNotifyValue(true, for: char)
+                }
+            }
+        }
+    }
+
+    nonisolated func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+        Task { @MainActor in
+            guard characteristic.isNotifying, characteristic.uuid == BMLUUIDs.primaryNotifyTX else { return }
+            log(.info, "Notify 6E400003 ativo. Iniciando sincronização automática...")
+            sendSyncTime()
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            sendSyncData()
+        }
+    }
+
+    nonisolated func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        Task { @MainActor in
+            guard let data = characteristic.value else { return }
+            let hex = data.map { String(format: "%02X", $0) }.joined(separator: " ")
+            if let output = BMLPacketParser.decode(data) {
+                log(.rx, "\(output.logDescription) | \(hex)")
+                if output.event == .watchTriggeredFindPhone {
+                    triggerPhoneAlertFeedback()
+                } else if output.event == .watchTriggeredCameraShutter {
+                    lastRemoteCameraTrigger = Date()
+                }
+                onDecodedEvent?(output.event)
+            } else {
+                log(.rx, "Não mapeado: \(hex)")
+            }
+        }
     }
 }
